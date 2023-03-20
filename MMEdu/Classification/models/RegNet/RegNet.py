@@ -1,88 +1,129 @@
-# mask_rcnn_regnetx-3.2GF_fpn_1x_coco_20200520_163141-2a9d1814.pth
-# model settings
-model = dict(backbone=dict(_delete_=True,
-                           type='RegNet',
-                           arch='regnetx_3.2gf',
-                           out_indices=(0, 1, 2, 3),
-                           frozen_stages=1,
-                           norm_cfg=dict(type='BN', requires_grad=True),
-                           norm_eval=True,
-                           style='pytorch',
-                           init_cfg=dict(
-                               type='Pretrained',
-                               checkpoint='open-mmlab://regnetx_3.2gf')),
-             neck=dict(type='FPN',
-                       in_channels=[96, 192, 432, 1008],
-                       out_channels=256,
-                       num_outs=5))
-
-# dataset settings
-dataset_type = 'CocoDataset'
-data_root = 'data/coco/'
-img_norm_cfg = dict(
-    # The mean and std are used in PyCls when training RegNets
+model = dict(
+    type='ImageClassifier',
+    backbone=dict(type='RegNet', arch='regnetx_3.2gf'),
+    neck=dict(type='GlobalAveragePooling'),
+    head=dict(
+        type='LinearClsHead',
+        num_classes=1000,
+        in_channels=1008,
+        loss=dict(type='CrossEntropyLoss', loss_weight=1.0),
+        topk=(1, 5)))
+dataset_type = 'ImageNet'
+data_preprocessor = dict(
+    num_classes=1000,
     mean=[103.53, 116.28, 123.675],
     std=[57.375, 57.12, 58.395],
     to_rgb=False)
 train_pipeline = [
-    # Images are converted to float32 directly after loading in PyCls
     dict(type='LoadImageFromFile'),
-    dict(type='LoadAnnotations', with_bbox=True, with_mask=True),
-    dict(type='Resize', img_scale=(1333, 800), keep_ratio=True),
-    dict(type='RandomFlip', flip_ratio=0.5),
-    dict(type='Normalize', **img_norm_cfg),
-    dict(type='Pad', size_divisor=32),
-    dict(type='DefaultFormatBundle'),
-    dict(type='Collect', keys=['img', 'gt_bboxes', 'gt_labels', 'gt_masks']),
+    dict(type='RandomResizedCrop', scale=224),
+    dict(type='RandomFlip', prob=0.5, direction='horizontal'),
+    dict(
+        type='Lighting',
+        eigval=[0.2175, 0.0188, 0.0045],
+        eigvec=[[-0.5836, -0.6948, 0.4203], [-0.5808, -0.0045, -0.814],
+                [-0.5675, 0.7192, 0.4009]],
+        alphastd=25.5,
+        to_rgb=False),
+    dict(type='PackClsInputs')
 ]
 test_pipeline = [
     dict(type='LoadImageFromFile'),
-    dict(type='MultiScaleFlipAug',
-         img_scale=(1333, 800),
-         flip=False,
-         transforms=[
-             dict(type='Resize', keep_ratio=True),
-             dict(type='RandomFlip'),
-             dict(type='Normalize', **img_norm_cfg),
-             dict(type='Pad', size_divisor=32),
-             dict(type='ImageToTensor', keys=['img']),
-             dict(type='Collect', keys=['img']),
-         ])
+    dict(type='ResizeEdge', scale=256, edge='short'),
+    dict(type='CenterCrop', crop_size=224),
+    dict(type='PackClsInputs')
 ]
-data = dict(train=dict(pipeline=train_pipeline),
-            val=dict(pipeline=test_pipeline),
-            test=dict(pipeline=test_pipeline))
-evaluation = dict(metric=['bbox', 'segm'])
-
-# optimizer
-optimizer = dict(type='SGD', lr=0.02, momentum=0.9, weight_decay=0.00005)
-optimizer_config = dict(grad_clip=None)
-# learning policy
-lr_config = dict(policy='step',
-                 warmup='linear',
-                 warmup_iters=500,
-                 warmup_ratio=0.001,
-                 step=[8, 11])
-runner = dict(type='EpochBasedRunner', max_epochs=12)
-
-checkpoint_config = dict(interval=1)
-# yapf:disable
-log_config = dict(
-    interval=50,
-    hooks=[
-        dict(type='TextLoggerHook'),
-        # dict(type='TensorboardLoggerHook')
-    ])
-# yapf:enable
-custom_hooks = [dict(type='NumClassCheckHook')]
-
-dist_params = dict(backend='nccl')
+train_dataloader = dict(
+    batch_size=64,
+    num_workers=5,
+    dataset=dict(
+        type='ImageNet',
+        data_root='data/imagenet',
+        ann_file='meta/train.txt',
+        data_prefix='train',
+        pipeline=[
+            dict(type='LoadImageFromFile'),
+            dict(type='RandomResizedCrop', scale=224),
+            dict(type='RandomFlip', prob=0.5, direction='horizontal'),
+            dict(
+                type='Lighting',
+                eigval=[0.2175, 0.0188, 0.0045],
+                eigvec=[[-0.5836, -0.6948, 0.4203], [-0.5808, -0.0045, -0.814],
+                        [-0.5675, 0.7192, 0.4009]],
+                alphastd=25.5,
+                to_rgb=False),
+            dict(type='PackClsInputs')
+        ]),
+    sampler=dict(type='DefaultSampler', shuffle=True))
+val_dataloader = dict(
+    batch_size=128,
+    num_workers=5,
+    dataset=dict(
+        type='ImageNet',
+        data_root='data/imagenet',
+        ann_file='meta/val.txt',
+        data_prefix='val',
+        pipeline=[
+            dict(type='LoadImageFromFile'),
+            dict(type='ResizeEdge', scale=256, edge='short'),
+            dict(type='CenterCrop', crop_size=224),
+            dict(type='PackClsInputs')
+        ]),
+    sampler=dict(type='DefaultSampler', shuffle=False))
+val_evaluator = dict(type='Accuracy', topk=(1, 5))
+test_dataloader = dict(
+    batch_size=128,
+    num_workers=5,
+    dataset=dict(
+        type='ImageNet',
+        data_root='data/imagenet',
+        ann_file='meta/val.txt',
+        data_prefix='val',
+        pipeline=[
+            dict(type='LoadImageFromFile'),
+            dict(type='ResizeEdge', scale=256, edge='short'),
+            dict(type='CenterCrop', crop_size=224),
+            dict(type='PackClsInputs')
+        ]),
+    sampler=dict(type='DefaultSampler', shuffle=False))
+test_evaluator = dict(type='Accuracy', topk=(1, 5))
+optim_wrapper = dict(
+    optimizer=dict(
+        type='SGD', lr=0.4, momentum=0.9, weight_decay=5e-05, nesterov=True))
+param_scheduler = [
+    dict(type='LinearLR', start_factor=0.1, by_epoch=True, begin=0, end=5),
+    dict(type='CosineAnnealingLR', T_max=95, by_epoch=True, begin=5, end=100)
+]
+train_cfg = dict(by_epoch=True, max_epochs=100, val_interval=1)
+val_cfg = dict()
+test_cfg = dict()
+auto_scale_lr = dict(base_batch_size=512)
+default_scope = 'mmcls'
+default_hooks = dict(
+    timer=dict(type='IterTimerHook'),
+    logger=dict(type='LoggerHook', interval=100),
+    param_scheduler=dict(type='ParamSchedulerHook'),
+    checkpoint=dict(type='CheckpointHook', interval=1),
+    sampler_seed=dict(type='DistSamplerSeedHook'),
+    visualization=dict(type='VisualizationHook', enable=False))
+env_cfg = dict(
+    cudnn_benchmark=False,
+    mp_cfg=dict(mp_start_method='fork', opencv_num_threads=0),
+    dist_cfg=dict(backend='nccl'))
+vis_backends = [dict(type='LocalVisBackend')]
+visualizer = dict(
+    type='ClsVisualizer', vis_backends=[dict(type='LocalVisBackend')])
 log_level = 'INFO'
 load_from = None
-resume_from = None
-workflow = [('train', 1)]
-
-# disable opencv multithreading to avoid system being overloaded
-opencv_num_threads = 0
-# set multi-process start method as `fork` to speed up the training
-mp_start_method = 'fork'
+resume = False
+randomness = dict(seed=None, deterministic=False)
+EIGVAL = [0.2175, 0.0188, 0.0045]
+EIGVEC = [[-0.5836, -0.6948, 0.4203], [-0.5808, -0.0045, -0.814],
+          [-0.5675, 0.7192, 0.4009]]
+custom_hooks = [
+    dict(
+        type='PreciseBNHook',
+        num_samples=8192,
+        interval=1,
+        priority='ABOVE_NORMAL')
+]

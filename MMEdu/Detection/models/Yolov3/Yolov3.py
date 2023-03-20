@@ -1,7 +1,55 @@
-
-# model settings
+train_cfg = dict(type='EpochBasedTrainLoop', max_epochs=30, val_interval=1)
+val_cfg = dict(type='ValLoop')
+test_cfg = dict(type='TestLoop')
+param_scheduler = [
+    dict(
+        type='LinearLR',
+        start_factor=0.0001,
+        by_epoch=False,
+        begin=0,
+        end=4000),
+    dict(type='MultiStepLR', by_epoch=True, milestones=[24, 28], gamma=0.1)
+]
+optim_wrapper = dict(
+    type='OptimWrapper',
+    optimizer=dict(type='SGD', lr=0.003, momentum=0.9, weight_decay=0.0005),
+    clip_grad=dict(max_norm=35, norm_type=2))
+auto_scale_lr = dict(enable=False, base_batch_size=192)
+default_scope = 'mmdet'
+default_hooks = dict(
+    timer=dict(type='IterTimerHook'),
+    logger=dict(type='LoggerHook', interval=50),
+    param_scheduler=dict(type='ParamSchedulerHook'),
+    checkpoint=dict(type='CheckpointHook', interval=1),
+    sampler_seed=dict(type='DistSamplerSeedHook'),
+    visualization=dict(type='DetVisualizationHook'))
+env_cfg = dict(
+    cudnn_benchmark=False,
+    mp_cfg=dict(mp_start_method='fork', opencv_num_threads=0),
+    dist_cfg=dict(backend='nccl'))
+vis_backends = [dict(type='LocalVisBackend')]
+visualizer = dict(
+    type='DetLocalVisualizer',
+    vis_backends=[dict(type='LocalVisBackend')],
+    name='visualizer')
+log_processor = dict(type='LogProcessor', window_size=50, by_epoch=True)
+log_level = 'INFO'
+load_from = None
+resume = False
+data_preprocessor = dict(
+    type='DetDataPreprocessor',
+    mean=[123.675, 116.28, 103.53],
+    std=[58.395, 57.12, 57.375],
+    bgr_to_rgb=True,
+    pad_size_divisor=32)
 model = dict(
     type='YOLOV3',
+    data_preprocessor=dict(
+        type='DetDataPreprocessor',
+        mean=[123.675, 116.28, 103.53],
+        std=[58.395, 57.12, 57.375],
+        bgr_to_rgb=True,
+        pad_size_divisor=32),
     backbone=dict(
         type='MobileNetV2',
         out_indices=(2, 4, 6),
@@ -42,7 +90,6 @@ model = dict(
             loss_weight=2.0,
             reduction='sum'),
         loss_wh=dict(type='MSELoss', loss_weight=2.0, reduction='sum')),
-    # training and testing settings
     train_cfg=dict(
         assigner=dict(
             type='GridAssigner',
@@ -54,108 +101,126 @@ model = dict(
         min_bbox_size=0,
         score_thr=0.05,
         conf_thr=0.005,
-        nms=dict(type='nms', iou_threshold=0.5),
+        nms=dict(type='nms', iou_threshold=0.45),
         max_per_img=100))
-# dataset settings
 dataset_type = 'CocoDataset'
 data_root = 'data/coco/'
-img_norm_cfg = dict(
-    mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
+file_client_args = dict(backend='disk')
 train_pipeline = [
-    dict(type='LoadImageFromFile'),
+    dict(type='LoadImageFromFile', file_client_args=dict(backend='disk')),
     dict(type='LoadAnnotations', with_bbox=True),
     dict(
         type='Expand',
-        mean=img_norm_cfg['mean'],
-        to_rgb=img_norm_cfg['to_rgb'],
+        mean=[123.675, 116.28, 103.53],
+        to_rgb=True,
         ratio_range=(1, 2)),
     dict(
         type='MinIoURandomCrop',
         min_ious=(0.4, 0.5, 0.6, 0.7, 0.8, 0.9),
         min_crop_size=0.3),
-    dict(
-        type='Resize',
-        img_scale=[(320, 320), (416, 416)],
-        multiscale_mode='range',
-        keep_ratio=True),
-    dict(type='RandomFlip', flip_ratio=0.5),
+    dict(type='RandomResize', scale=[(320, 320), (416, 416)], keep_ratio=True),
+    dict(type='RandomFlip', prob=0.5),
     dict(type='PhotoMetricDistortion'),
-    dict(type='Normalize', **img_norm_cfg),
-    dict(type='Pad', size_divisor=32),
-    dict(type='DefaultFormatBundle'),
-    dict(type='Collect', keys=['img', 'gt_bboxes', 'gt_labels'])
+    dict(type='PackDetInputs')
 ]
 test_pipeline = [
-    dict(type='LoadImageFromFile'),
+    dict(type='LoadImageFromFile', file_client_args=dict(backend='disk')),
+    dict(type='Resize', scale=(416, 416), keep_ratio=True),
+    dict(type='LoadAnnotations', with_bbox=True),
     dict(
-        type='MultiScaleFlipAug',
-        img_scale=(416, 416),
-        flip=False,
-        transforms=[
-            dict(type='Resize', keep_ratio=True),
-            dict(type='RandomFlip'),
-            dict(type='Normalize', **img_norm_cfg),
-            dict(type='Pad', size_divisor=32),
-            dict(type='DefaultFormatBundle'),
-            dict(type='Collect', keys=['img'])
-        ])
+        type='PackDetInputs',
+        meta_keys=('img_id', 'img_path', 'ori_shape', 'img_shape',
+                   'scale_factor'))
 ]
-data = dict(
-    samples_per_gpu=8,
-    workers_per_gpu=4,
-    train=dict(
-        type='RepeatDataset',  # use RepeatDataset to speed up training
+train_dataloader = dict(
+    batch_size=24,
+    num_workers=4,
+    persistent_workers=True,
+    sampler=dict(type='DefaultSampler', shuffle=True),
+    batch_sampler=dict(type='AspectRatioBatchSampler'),
+    dataset=dict(
+        type='RepeatDataset',
         times=10,
         dataset=dict(
-            type=dataset_type,
-            ann_file=data_root + 'annotations/person_keypoints_train2017.json',
-            img_prefix=data_root + 'images/train2017',
-            pipeline=train_pipeline)),
-    val=dict(
-        type=dataset_type,
-        ann_file=data_root + 'annotations/person_keypoints_train2017.json',
-        img_prefix=data_root + 'images/train2017',
-        pipeline=test_pipeline),
-    test=dict(
-        type=dataset_type,
-        ann_file=data_root + 'annotations/person_keypoints_train2017.json',
-        img_prefix=data_root + 'images/train2017',
-        pipeline=test_pipeline))
-# optimizer
-optimizer = dict(type='SGD', lr=0.001, momentum=0.9, weight_decay=0.0005)
-optimizer_config = dict(grad_clip=dict(max_norm=35, norm_type=2))
-# learning policy
-lr_config = dict(
-    policy='step',
-    warmup='linear',
-    warmup_iters=4000,
-    warmup_ratio=0.0001,
-    step=[24, 28])
-# runtime settings
-runner = dict(type='EpochBasedRunner', max_epochs=100)
-evaluation = dict(interval=1, metric=['bbox'])
+            type='CocoDataset',
+            data_root='data/coco/',
+            ann_file='annotations/instances_train2017.json',
+            data_prefix=dict(img='train2017/'),
+            filter_cfg=dict(filter_empty_gt=True, min_size=32),
+            pipeline=[
+                dict(
+                    type='LoadImageFromFile',
+                    file_client_args=dict(backend='disk')),
+                dict(type='LoadAnnotations', with_bbox=True),
+                dict(
+                    type='Expand',
+                    mean=[123.675, 116.28, 103.53],
+                    to_rgb=True,
+                    ratio_range=(1, 2)),
+                dict(
+                    type='MinIoURandomCrop',
+                    min_ious=(0.4, 0.5, 0.6, 0.7, 0.8, 0.9),
+                    min_crop_size=0.3),
+                dict(
+                    type='RandomResize',
+                    scale=[(320, 320), (416, 416)],
+                    keep_ratio=True),
+                dict(type='RandomFlip', prob=0.5),
+                dict(type='PhotoMetricDistortion'),
+                dict(type='PackDetInputs')
+            ])))
+val_dataloader = dict(
+    batch_size=24,
+    num_workers=4,
+    persistent_workers=True,
+    drop_last=False,
+    sampler=dict(type='DefaultSampler', shuffle=False),
+    dataset=dict(
+        type='CocoDataset',
+        data_root='data/coco/',
+        ann_file='annotations/instances_val2017.json',
+        data_prefix=dict(img='val2017/'),
+        test_mode=True,
+        pipeline=[
+            dict(
+                type='LoadImageFromFile',
+                file_client_args=dict(backend='disk')),
+            dict(type='Resize', scale=(416, 416), keep_ratio=True),
+            dict(type='LoadAnnotations', with_bbox=True),
+            dict(
+                type='PackDetInputs',
+                meta_keys=('img_id', 'img_path', 'ori_shape', 'img_shape',
+                           'scale_factor'))
+        ]))
+test_dataloader = dict(
+    batch_size=24,
+    num_workers=4,
+    persistent_workers=True,
+    drop_last=False,
+    sampler=dict(type='DefaultSampler', shuffle=False),
+    dataset=dict(
+        type='CocoDataset',
+        data_root='data/coco/',
+        ann_file='annotations/instances_val2017.json',
+        data_prefix=dict(img='val2017/'),
+        test_mode=True,
+        pipeline=[
+            dict(
+                type='LoadImageFromFile',
+                file_client_args=dict(backend='disk')),
+            dict(type='Resize', scale=(416, 416), keep_ratio=True),
+            dict(type='LoadAnnotations', with_bbox=True),
+            dict(
+                type='PackDetInputs',
+                meta_keys=('img_id', 'img_path', 'ori_shape', 'img_shape',
+                           'scale_factor'))
+        ]))
+val_evaluator = dict(
+    type='CocoMetric',
+    ann_file='data/coco/annotations/instances_val2017.json',
+    metric='bbox')
+test_evaluator = dict(
+    type='CocoMetric',
+    ann_file='data/coco/annotations/instances_val2017.json',
+    metric='bbox')
 find_unused_parameters = True
-
-checkpoint_config = dict(interval=1)
-# yapf:disable
-log_config = dict(
-    interval=50,
-    hooks=[
-        dict(type='TextLoggerHook'),
-        # dict(type='TensorboardLoggerHook')
-    ])
-# yapf:enable
-custom_hooks = [dict(type='NumClassCheckHook')]
-
-dist_params = dict(backend='nccl')
-log_level = 'INFO'
-load_from = None
-resume_from = None
-workflow = [('train', 1)]
-
-# disable opencv multithreading to avoid system being overloaded
-opencv_num_threads = 0
-# set multi-process start method as `fork` to speed up the training
-mp_start_method = 'fork'
-
-work_dir = "checkpoints"
